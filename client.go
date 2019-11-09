@@ -106,6 +106,84 @@ func (c *Client) Close() {
 	c.conn.Store((*amqp.Connection)(nil))
 }
 
+//Connect connect to rabbitmq
+func (c *Client) Connect() {
+
+}
+
+func (c *Client) connect() {
+	for {
+		if c.config.Heartbeat == 0 {
+			c.config.Heartbeat = 10 * time.Second
+		}
+		conn, err := amqp.DialConfig(c.addr, c.config)
+		if !c.reportErr(err) {
+			c.conn.Store(conn)
+			atomic.StoreInt32(&c.attempt, 0)
+			ch, err := conn.Channel()
+			if c.reportErr(err) {
+				if c.bo != nil {
+					time.Sleep(c.bo.Backoff(int(c.attempt)))
+					atomic.AddInt32(&c.attempt, 1)
+					continue
+				}
+			}
+
+			for _, declare := range c.declarations {
+				c.reportErr(declare(ch))
+			}
+
+			for cons := range c.consumers {
+				ch1, err := c.channel()
+				if err == nil {
+					go cons.serve(c, ch1)
+				}
+			}
+
+			for pub := range c.publishers {
+				ch1, err := c.channel()
+				if err == nil {
+					go pub.serve(c, ch1)
+				}
+			}
+			return
+		}
+		if c.bo != nil {
+			time.Sleep(c.bo.Backoff(int(c.attempt)))
+			atomic.AddInt32(&c.attempt, 1)
+			continue
+		}
+	}
+}
+
+func (c *Client) reconnect() {
+	conn, _ := c.conn.Load().(*amqp.Connection)
+	connErr := make(chan *amqp.Error)
+	chanBlocking := make(chan amqp.Blocking)
+	conn.NotifyClose(connErr)
+	conn.NotifyBlocked(chanBlocking)
+
+	// loop for blocking/deblocking
+	for {
+		select {
+		case err1 := <-connErr:
+			c.reportErr(err1)
+
+			if conn1 := c.conn.Load().(*amqp.Connection); conn1 != nil {
+				c.conn.Store((*amqp.Connection)(nil))
+				conn1.Close()
+			}
+			// return from routine to launch reconnect process
+			return
+		case blocking := <-chanBlocking:
+			select {
+			case c.blocking <- blocking:
+			default:
+			}
+		}
+	}
+}
+
 // Loop should be run as condition for `for` with receiving from (*Client).Errors()
 //
 // It will manage AMQP connection, run queue and exchange declarations, consumers.
@@ -197,6 +275,27 @@ func (c *Client) Loop() bool {
 	}
 
 	return true
+}
+
+// MsgCount get message count of specified queue
+func (c *Client) MsgCount(queueName string) (int, error) {
+	ch, err := c.channel()
+	if err != nil {
+		return 0, err
+	}
+	defer ch.Close()
+	q, err := ch.QueueDeclarePassive(
+		queueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	if err != nil {
+		return 0, err
+	}
+	return q.Messages, nil
 }
 
 func (c *Client) reportErr(err error) bool {

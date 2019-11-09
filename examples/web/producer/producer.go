@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/assembla/cony"
+	"github.com/loveason/cony"
 	"github.com/streadway/amqp"
 )
 
@@ -46,9 +46,9 @@ func main() {
 
 	// Declare the exchange we'll be using
 	exc := cony.Exchange{
-		Name:       "web",
-		Kind:       "fanout",
-		AutoDelete: true,
+		Name:       "web_direct",
+		Kind:       "direct",
+		AutoDelete: false,
 	}
 	cli.Declare([]cony.Declaration{
 		cony.DeclareExchange(exc),
@@ -68,9 +68,10 @@ func main() {
 		for cli.Loop() {
 			select {
 			case err := <-cli.Errors():
-				fmt.Println(err)
+				fmt.Println("err:", err)
 			}
 		}
+		fmt.Println("loop end")
 	}()
 
 	// Simple template for our web-view
@@ -97,9 +98,27 @@ func main() {
 			// Note: we're using the "pbl" variable
 			// (declared above in our code) and we
 			// don't declare a new Publisher value.
-			go pbl.Publish(amqp.Publishing{
-				Body: []byte(r.FormValue("body")),
-			})
+
+			// go pbl.Publish(amqp.Publishing{
+			// 	Body: []byte(r.FormValue("body")),
+			// })
+			strBody := r.FormValue("body")
+			go func(body string) {
+				// strBody := r.FormValue("body")
+				if body == "stop" {
+					cli.Close()
+				} else {
+					fmt.Println("begin publish:", body)
+					err := pbl.Publish(amqp.Publishing{
+						Body: []byte(body),
+					})
+					if err != nil {
+						fmt.Println("publish err:", err)
+					} else {
+						fmt.Println("publish success:", body)
+					}
+				}
+			}(strBody)
 			http.Redirect(w, r, "/?status=thanks", http.StatusFound)
 			return
 		}

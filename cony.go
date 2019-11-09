@@ -45,6 +45,7 @@ type mqDeleter interface {
 type mqChannel interface {
 	Close() error
 	Consume(string, string, bool, bool, bool, bool, amqp.Table) (<-chan amqp.Delivery, error)
+	Get(string, bool) (amqp.Delivery, bool, error)
 	NotifyClose(chan *amqp.Error) chan *amqp.Error
 	Publish(string, string, bool, bool, amqp.Publishing) error
 	Qos(int, int, bool) error
